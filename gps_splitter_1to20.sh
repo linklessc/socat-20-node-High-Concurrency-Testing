@@ -4,7 +4,7 @@
 CONFIG_FILE="/bin/wmt_winset/config.ini"
 SOURCE_DEV="/dev/ttyACM0"   # Physical GPS Device
 START_ID=1                  # Start ID /dev/gps1
-END_ID=20                   # Default End ID /dev/gps20 (Fallback)
+END_ID=1
 
 # === 1. Read Configuration ===
 # Check if the configuration file exists
@@ -18,11 +18,11 @@ if [ -f "$CONFIG_FILE" ]; then
         echo "Config loaded: gps_port = $END_ID"
     else
         echo "Error: gps_port not found or invalid in $CONFIG_FILE. Defaulting to 20."
-        END_ID=20
+        #END_ID=1
     fi
 else
     echo "Warning: Config file not found ($CONFIG_FILE). Defaulting to 20."
-    END_ID=20
+    #END_ID=1
 fi
 
 echo "=== Starting creation of virtual nodes /dev/gps$START_ID to /dev/gps$END_ID ==="
