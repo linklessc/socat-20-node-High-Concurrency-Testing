@@ -1,18 +1,16 @@
 #sudo nano /etc/systemd/system/gps_splitter.service
+#sudo nano /bin/wmt_winset/wmt_gps_splitter.py
 
 [Unit]
-Description=Auto GPS Splitter based on config.ini
-# Ensure execution waits until the physical GPS device appears
+Description=Auto GPS Splitter (Python Non-blocking)
 Requires=dev-ttyACM0.device
 After=dev-ttyACM0.device network.target
 
 [Service]
 Type=simple
 User=root
-# Set baud rate (adjust based on your hardware, typically 9600 or 4800)
 ExecStartPre=/bin/stty -F /dev/ttyACM0 9600 raw -echo
-# Execute the script created previously
-ExecStart=/bin/bash /bin/wmt_gps_splitter.sh
+ExecStart=/usr/bin/python3 /bin/wmt_winset/wmt_gps_splitter.py
 Restart=always
 RestartSec=5
 
