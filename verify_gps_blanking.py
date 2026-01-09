@@ -9,9 +9,9 @@ import fcntl
 # === Configuration ===
 VIRTUAL_GPS_LINK = "/dev/gps0"
 
-# Simulated high-speed data (10 km/h, > 5 km/h triggers blanking)
-# Format matches GpsManager.cpp parsing rule: looks for the value before 'K'
-NMEA_SPEED_HIGH = b"$GNVTG,,T,,M,5.4,N,10.0,K,D*26\r\n"
+# Simulated high-speed data (20 km/h, > 5 km/h triggers blanking)
+# Note: 20 km/h is approx 10.8 knots. Checksum updated to *1D.
+NMEA_SPEED_HIGH = b"$GNVTG,,T,,M,10.8,N,20.0,K,D*1D\r\n"
 
 # Simulated stationary data (0 km/h, < 3 km/h releases blanking)
 NMEA_SPEED_ZERO = b"$GNVTG,,T,,M,0.0,N,0.0,K,D*26\r\n"
@@ -66,7 +66,7 @@ def main():
     try:
         while True:
             # === Phase A: Simulate Driving (10 sec) ===
-            print(f"[{time.strftime('%H:%M:%S')}] Status: DRIVING (10.0 km/h) -> Screen should LOCK")
+            print(f"[{time.strftime('%H:%M:%S')}] Status: DRIVING (20.0 km/h) -> Screen should LOCK")
             for _ in range(10):
                 os.write(master_fd, NMEA_SPEED_HIGH)
                 time.sleep(1) # Send GPS data once per second
