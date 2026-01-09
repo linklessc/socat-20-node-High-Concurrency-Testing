@@ -57,7 +57,7 @@ echo "=== Starting creation of virtual nodes /dev/gps$START_ID to /dev/gps$END_I
 CMD_STR="cat $SOURCE_DEV | tee"
 
 # Loop: Generate gps(START_ID) to gps(END_ID)
-for (( i=START_ID; i<=END_ID; i++ ))
+for (( i=START_ID; i<END_ID; i++ ))
 do
     # Remove old links first
     rm -f "/dev/gps$i"
