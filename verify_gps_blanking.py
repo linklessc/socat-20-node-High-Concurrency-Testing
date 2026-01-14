@@ -9,12 +9,30 @@ import fcntl
 # === Configuration ===
 VIRTUAL_GPS_LINK = "/dev/gps0"
 
-# Simulated high-speed data (20 km/h, > 5 km/h triggers blanking)
-# Note: 20 km/h is approx 10.8 knots. Checksum updated to *1D.
-NMEA_SPEED_HIGH = b"$GNVTG,,T,,M,10.8,N,20.0,K,D*1D\r\n"
+# Set Test Speeds (Modify here)
+SPEED_HIGH = 20.0  # Phase A: Simulate Driving
+SPEED_LOW  = 5.0   # Phase B: Simulate Low Speed / Lower Limit
 
-# Simulated stationary data (0 km/h, < 3 km/h releases blanking)
-NMEA_SPEED_ZERO = b"$GNVTG,,T,,M,0.0,N,0.0,K,D*26\r\n"
+def create_nmea_vtg(kph):
+    """
+    Helper function to generate a valid NMEA VTG string with Checksum.
+    Formula: $GNVTG,,T,,M,{knots},N,{kph},K,D*checksum\r\n
+    """
+    # Convert km/h to knots (1 km/h = 0.539957 knots)
+    knots = kph * 0.539957
+    
+    # Construct the payload (between $ and *)
+    # Using .1f to match standard GPS precision (1 decimal place)
+    payload = f"GNVTG,,T,,M,{knots:.1f},N,{kph:.1f},K,D"
+    
+    # Calculate Checksum (XOR of all characters in payload)
+    checksum = 0
+    for char in payload:
+        checksum ^= ord(char)
+        
+    # Return formatted bytes
+    nmea_string = f"${payload}*{checksum:02X}\r\n"
+    return nmea_string.encode('utf-8')
 
 def cleanup():
     """Cleanup: Remove the symlink."""
@@ -39,7 +57,7 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    print("=== WinSet GPS Blanking Test Tool ===")
+    print("=== WinSet GPS Blanking Test Tool (Dynamic Speed) ===")
 
     # 1. Stop background Splitter service (to avoid conflict with /dev/gps0)
     print("1. Stopping real GPS Splitter service...")
@@ -59,22 +77,26 @@ def main():
     print(f"2. Virtual GPS Port Created: {VIRTUAL_GPS_LINK} -> {slave_name}")
     print("3. Simulation Started. Press Ctrl+C to stop.\n")
     print("   Please observe WinSet screen changes:")
-    print("   - DRIVING: Screen should **BLACK OUT / LOCK**")
-    print("   - STOPPED: Screen should **RESTORE / UNLOCK**")
+    print(f"   - HIGH SPEED ({SPEED_HIGH} km/h): Screen should LOCK")
+    print(f"   - LOW SPEED  ({SPEED_LOW} km/h):  Screen should UNLOCK (if threshold > {SPEED_LOW})")
     print("-" * 40)
 
     try:
         while True:
-            # === Phase A: Simulate Driving (10 sec) ===
-            print(f"[{time.strftime('%H:%M:%S')}] Status: DRIVING (20.0 km/h) -> Screen should LOCK")
+            # === Phase A: Simulate Driving ===
+            nmea_high = create_nmea_vtg(SPEED_HIGH)
+            print(f"[{time.strftime('%H:%M:%S')}] Status: DRIVING ({SPEED_HIGH} km/h) -> Sending: {nmea_high.strip().decode()}")
+            
             for _ in range(10):
-                os.write(master_fd, NMEA_SPEED_HIGH)
-                time.sleep(1) # Send GPS data once per second
+                os.write(master_fd, nmea_high)
+                time.sleep(1) 
 
-            # === Phase B: Simulate Stopping (10 sec) ===
-            print(f"[{time.strftime('%H:%M:%S')}] Status: STOPPED (0.0 km/h) -> Screen should UNLOCK")
+            # === Phase B: Simulate Low Speed (Threshold Test) ===
+            nmea_low = create_nmea_vtg(SPEED_LOW)
+            print(f"[{time.strftime('%H:%M:%S')}] Status: LOW SPEED ({SPEED_LOW} km/h) -> Sending: {nmea_low.strip().decode()}")
+            
             for _ in range(10):
-                os.write(master_fd, NMEA_SPEED_ZERO)
+                os.write(master_fd, nmea_low)
                 time.sleep(1)
 
     except OSError as e:
@@ -82,8 +104,7 @@ def main():
     finally:
         cleanup()
         print("4. Restarting real GPS Splitter service...")
-        # Note: Original script used 'wmt_gps_splitter.service' for stop and 'gps_splitter' for start.
-        # Ensure these match your actual system service names.
+        # Note: Ensure this service name matches your actual system
         os.system("systemctl restart wmt_gps_splitter.service")
 
 if __name__ == "__main__":
