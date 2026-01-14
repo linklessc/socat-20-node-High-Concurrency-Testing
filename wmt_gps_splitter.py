@@ -7,11 +7,20 @@ import sys
 import fcntl
 import glob
 import re
+import termios  # [NEW] For controlling terminal I/O (used for buffer flushing)
+import struct   # [NEW] For unpacking binary data returned by ioctl
 
 # === Configuration ===
 CONFIG_FILE = "/bin/wmt_winset/config.ini"
 SOURCE_DEV = "/dev/ttyACM0"  # Physical GPS device path
 START_ID = 0
+
+# [NEW] Buffer Threshold
+# If the buffer backlog exceeds this number of bytes (approx. 0.5 to 1 second of GPS data),
+# we force a flush of the buffer.
+# This ensures that when an App connects, it reads the latest data immediately,
+# rather than reading old data accumulated over several seconds.
+MAX_BUFFER_BACKLOG = 512 
 
 # Global variable to track active ports so the Signal Handler knows what to clean up
 active_virtual_ports = []
@@ -73,7 +82,7 @@ def force_cleanup_at_startup():
         # preventing accidental deletion of other devices.
         if re.match(r"^/dev/gps\d+$", file_path):
             try:
-                # Check if it is a link or a file and remove it
+                # Check if it is a symlink or a regular file, then remove it
                 if os.path.islink(file_path) or os.path.exists(file_path):
                     os.unlink(file_path)
                     print(f" -> Removed stale file: {file_path}")
@@ -117,6 +126,7 @@ def main():
         sys.exit(0)
 
     print(f"=== Starting Python GPS Splitter (0 to {end_id}) ===")
+    print(f"=== Anti-Lag Mode Enabled (Threshold: {MAX_BUFFER_BACKLOG} bytes) ===")
 
     # 2. Open the physical GPS source device
     # Added a timeout/retry mechanism to wait for the hardware to be ready
@@ -130,7 +140,7 @@ def main():
              sys.exit(1)
         
     try:
-        # Open source in Read-Only mode, not controlling terminal
+        # Open source in Read-Only mode, ensure it doesn't become the controlling terminal
         source_fd = os.open(SOURCE_DEV, os.O_RDONLY | os.O_NOCTTY)
     except OSError as e:
         print(f"Failed to open source {SOURCE_DEV}: {e}")
@@ -144,13 +154,13 @@ def main():
             # Create a pseudo-terminal pair (master, slave)
             master_fd, slave_fd = pty.openpty()
             
-            # Set Master FD to non-blocking (Essential!)
+            # Set Master FD to non-blocking (Essential for stability!)
             set_non_blocking(master_fd)
             
             slave_name = os.ttyname(slave_fd)
             link_name = f"/dev/gps{i}"
 
-            # Double-check cleanup just in case
+            # Double-check cleanup just in case a file exists
             if os.path.exists(link_name):
                 try:
                     os.unlink(link_name)
@@ -160,7 +170,7 @@ def main():
             # Create the symlink: /dev/gpsX -> /dev/pts/Y
             os.symlink(slave_name, link_name)
             
-            # Set permissions so any user (WinSet) can read it
+            # Set permissions so any user (e.g., WinSet) can read it (rw-rw-rw-)
             os.chmod(link_name, 0o666)
             os.chmod(slave_name, 0o666)
 
@@ -177,7 +187,7 @@ def main():
     try:
         while True:
             try:
-                # Read data from physical GPS
+                # Read data from physical GPS (up to 4096 bytes)
                 data = os.read(source_fd, 4096)
                 if not data:
                     print("Source EOF")
@@ -186,10 +196,25 @@ def main():
                 # Write data to all virtual ports
                 for fd in virtual_fds:
                     try:
+                        # [NEW] Anti-Lag Logic
+                        # Check how many bytes are waiting in the output queue (TIOCOUTQ).
+                        # This tells us if the consumer (App) is reading slowly or not at all.
+                        buf_info = fcntl.ioctl(fd, termios.TIOCOUTQ, struct.pack('I', 0))
+                        pending_bytes = struct.unpack('I', buf_info)[0]
+
+                        # If backlog is too high, flush the buffer to remove old data.
+                        if pending_bytes > MAX_BUFFER_BACKLOG:
+                            # TCOFLUSH: Flushes the output buffer (discards data not yet transmitted)
+                            termios.tcflush(fd, termios.TCOFLUSH)
+                            # (Optional) Logging:
+                            # print(f"Flushed port FD {fd} due to lag ({pending_bytes} bytes)")
+
+                        # Write the fresh data into the buffer
                         os.write(fd, data)
+
                     except BlockingIOError:
-                        # [ANNOTATION] Buffer is full (no one reading this port).
-                        # We simply skip writing to prevent blocking the whole script.
+                        # Buffer is full and we couldn't flush for some reason.
+                        # We simply skip writing to prevent blocking the entire script.
                         pass 
                     except OSError:
                         # Handle other errors (e.g., port closed unexpectedly)
