@@ -2,7 +2,7 @@
 #sudo nano /bin/wmt_winset/wmt_gps_splitter.py
 
 [Unit]
-Description=Auto GPS Splitter (Python Non-blocking)
+Description=Auto GPS Splitter
 Requires=dev-ttyACM0.device
 After=dev-ttyACM0.device network.target
 
@@ -15,4 +15,5 @@ Restart=always
 RestartSec=5
 
 [Install]
+
 WantedBy=multi-user.target
