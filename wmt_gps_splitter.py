@@ -7,22 +7,20 @@ import sys
 import fcntl
 import glob
 import re
-import termios  # [NEW] For controlling terminal I/O (used for buffer flushing)
-import struct   # [NEW] For unpacking binary data returned by ioctl
+import termios
+import struct
 
 # === Configuration ===
 CONFIG_FILE = "/bin/wmt_winset/config.ini"
-SOURCE_DEV = "/dev/ttyACM0"  # Physical GPS device path
+SOURCE_DEV = "/dev/ttyACM0"   # Physical GPS device path
 START_ID = 0
 
-# [NEW] Buffer Threshold
-# If the buffer backlog exceeds this number of bytes (approx. 0.5 to 1 second of GPS data),
-# we force a flush of the buffer.
-# This ensures that when an App connects, it reads the latest data immediately,
-# rather than reading old data accumulated over several seconds.
-MAX_BUFFER_BACKLOG = 4096 
+# [Anti-Lag Threshold]
+# Set to 4096 bytes (approx. 3-4 seconds of data volume)
+# If the backlog exceeds this value, the buffer will be forcibly cleared to ensure real-time performance.
+MAX_BUFFER_BACKLOG = 4096
 
-# Global variable to track active ports so the Signal Handler knows what to clean up
+# Global variable to track active ports for cleanup
 active_virtual_ports = []
 
 def load_config():
@@ -38,12 +36,10 @@ def load_config():
     try:
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
-                # Look for the 'gps_port' setting
                 if line.strip().startswith("gps_port"):
                     parts = line.split('=')
                     if len(parts) > 1:
                         val = parts[1].strip().lower()
-                        # If set to 'false', disable the splitter
                         if val == 'false':
                             return -1
                         try:
@@ -58,31 +54,23 @@ def load_config():
 def set_non_blocking(fd):
     """
     Sets a File Descriptor (FD) to non-blocking mode.
-    
-    This is CRITICAL for preventing the 'deadlock' issue. 
-    If a consumer (e.g., WinSet) reads slowly or not at all, 
-    writing to this FD will raise a BlockingIOError instead of freezing the script.
+    Essential to prevent the script from freezing if an app stops reading.
     """
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 def force_cleanup_at_startup():
     """
-    [NEW] Force Startup Cleanup:
-    Scans for any existing /dev/gps* files and deletes them.
-    This ensures a clean state even if the previous instance crashed 
-    or was killed without cleaning up.
+    Force Startup Cleanup:
+    Scans for any existing /dev/gps* files and deletes them to ensure a clean state.
     """
     print("Performing startup cleanup...")
-    # Find all files matching /dev/gps*
     file_list = glob.glob("/dev/gps*")
     
     for file_path in file_list:
-        # Strict regex match to ensure we only delete /dev/gps + numbers (e.g., /dev/gps0)
-        # preventing accidental deletion of other devices.
+        # Strict regex to avoid accidental deletion
         if re.match(r"^/dev/gps\d+$", file_path):
             try:
-                # Check if it is a symlink or a regular file, then remove it
                 if os.path.islink(file_path) or os.path.exists(file_path):
                     os.unlink(file_path)
                     print(f" -> Removed stale file: {file_path}")
@@ -104,20 +92,18 @@ def cleanup_symlinks(virtual_ports):
 
 def handle_sigterm(signum, frame):
     """
-    Signal Handler for SIGTERM (sent by 'systemctl stop' or 'restart').
-    Ensures graceful exit and cleanup of files.
+    Signal Handler for SIGTERM/SIGINT.
     """
     print(f"Received signal {signum}, exiting gracefully...")
     cleanup_symlinks(active_virtual_ports)
     sys.exit(0)
 
 def main():
-    # Register signal listeners to catch termination signals
-    signal.signal(signal.SIGTERM, handle_sigterm) # Systemctl stop
-    signal.signal(signal.SIGINT, handle_sigterm)  # Ctrl+C
+    # Register signal listeners
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
 
-    # 1. [NEW] Perform forced cleanup immediately upon startup
-    # This fixes the issue where residue files remained after a restart.
+    # 1. Startup Cleanup
     force_cleanup_at_startup()
 
     end_id = load_config()
@@ -126,21 +112,21 @@ def main():
         sys.exit(0)
 
     print(f"=== Starting Python GPS Splitter (0 to {end_id}) ===")
-    print(f"=== Anti-Lag Mode Enabled (Threshold: {MAX_BUFFER_BACKLOG} bytes) ===")
+    print(f"=== Anti-Lag Mode: Enabled (Threshold: {MAX_BUFFER_BACKLOG} bytes) ===")
+    print(f"=== Data Mode: Smart Buffer Splicing (Residual Buffering) ===")
 
     # 2. Open the physical GPS source device
-    # Added a timeout/retry mechanism to wait for the hardware to be ready
     retry_count = 0
     while not os.path.exists(SOURCE_DEV):
         print(f"Waiting for {SOURCE_DEV}...")
         time.sleep(2)
         retry_count += 1
-        if retry_count > 30: # Wait up to 60 seconds
-             print(f"Device {SOURCE_DEV} not found after timeout.")
-             sys.exit(1)
+        if retry_count > 30:
+            print(f"Device {SOURCE_DEV} not found after timeout.")
+            sys.exit(1)
         
     try:
-        # Open source in Read-Only mode, ensure it doesn't become the controlling terminal
+        # Open source in Read-Only mode, not controlling terminal
         source_fd = os.open(SOURCE_DEV, os.O_RDONLY | os.O_NOCTTY)
     except OSError as e:
         print(f"Failed to open source {SOURCE_DEV}: {e}")
@@ -151,26 +137,21 @@ def main():
     # 3. Create virtual Ports (PTY pairs)
     for i in range(START_ID, end_id):
         try:
-            # Create a pseudo-terminal pair (master, slave)
             master_fd, slave_fd = pty.openpty()
             
-            # Set Master FD to non-blocking (Essential for stability!)
+            # Set Master FD to non-blocking
             set_non_blocking(master_fd)
             
             slave_name = os.ttyname(slave_fd)
             link_name = f"/dev/gps{i}"
 
-            # Double-check cleanup just in case a file exists
             if os.path.exists(link_name):
                 try:
                     os.unlink(link_name)
                 except OSError:
                     pass
 
-            # Create the symlink: /dev/gpsX -> /dev/pts/Y
             os.symlink(slave_name, link_name)
-            
-            # Set permissions so any user (e.g., WinSet) can read it (rw-rw-rw-)
             os.chmod(link_name, 0o666)
             os.chmod(slave_name, 0o666)
 
@@ -183,48 +164,66 @@ def main():
 
     print("=== Splitting Service Running... ===")
 
+    # [RESIDUAL BUFFERING] Variable to hold incomplete data fragments
+    leftover = b""
+
     # 4. Main Data Loop
     try:
         while True:
             try:
-                # Read data from physical GPS (up to 4096 bytes)
-                data = os.read(source_fd, 4096)
-                if not data:
+                # Read raw data (up to 4096 bytes)
+                raw_data = os.read(source_fd, 4096)
+                if not raw_data:
                     print("Source EOF")
                     break
                 
-                # Write data to all virtual ports
+                # === [METHOD 1: Residual Buffering Logic] ===
+                # Combine leftover from previous read with new data
+                data_to_process = leftover + raw_data
+
+                # Find the position of the last newline character (\n)
+                # GPS NMEA sentences always end with \n (0x0A)
+                last_newline = data_to_process.rfind(b'\n')
+
+                if last_newline != -1:
+                    # We found at least one complete sentence.
+                    # Extract everything up to the last newline as the payload to send.
+                    final_payload = data_to_process[:last_newline+1]
+                    
+                    # Save the remaining part (fragment) for the next loop
+                    leftover = data_to_process[last_newline+1:]
+                else:
+                    # No newline found in this entire chunk. 
+                    # It means we only have a fragment. Keep it all and wait for more data.
+                    leftover = data_to_process
+                    continue # Skip writing this time
+
+                # === Write complete sentences to all virtual ports ===
                 for fd in virtual_fds:
                     try:
-                        # [NEW] Anti-Lag Logic
-                        # Check how many bytes are waiting in the output queue (TIOCOUTQ).
-                        # This tells us if the consumer (App) is reading slowly or not at all.
+                        # [Anti-Lag Logic] Check backlog size
                         buf_info = fcntl.ioctl(fd, termios.TIOCOUTQ, struct.pack('I', 0))
                         pending_bytes = struct.unpack('I', buf_info)[0]
 
-                        # If backlog is too high, flush the buffer to remove old data.
+                        # If backlog is too high, flush the buffer
                         if pending_bytes > MAX_BUFFER_BACKLOG:
-                            # TCOFLUSH: Flushes the output buffer (discards data not yet transmitted)
                             termios.tcflush(fd, termios.TCOFLUSH)
-                            # (Optional) Logging:
-                            # print(f"Flushed port FD {fd} due to lag ({pending_bytes} bytes)")
+                            # Note: After flushing, we write 'final_payload' which contains
+                            # complete NMEA sentences. This ensures the App gets valid data immediately.
 
-                        # Write the fresh data into the buffer
-                        os.write(fd, data)
+                        # Write the complete NMEA sentences
+                        os.write(fd, final_payload)
 
                     except BlockingIOError:
-                        # Buffer is full and we couldn't flush for some reason.
-                        # We simply skip writing to prevent blocking the entire script.
-                        pass 
+                        # Buffer full and couldn't flush (or just skipped), ignore to prevent blocking
+                        pass
                     except OSError:
-                        # Handle other errors (e.g., port closed unexpectedly)
                         pass
             except OSError:
                 break
     except Exception as e:
         print(f"Loop error: {e}")
     finally:
-        # Final cleanup on exit
         cleanup_symlinks(active_virtual_ports)
         try:
             os.close(source_fd)
@@ -233,4 +232,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
