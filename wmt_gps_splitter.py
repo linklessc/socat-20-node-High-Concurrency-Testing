@@ -20,7 +20,7 @@ START_ID = 0
 # we force a flush of the buffer.
 # This ensures that when an App connects, it reads the latest data immediately,
 # rather than reading old data accumulated over several seconds.
-MAX_BUFFER_BACKLOG = 512 
+MAX_BUFFER_BACKLOG = 4096 
 
 # Global variable to track active ports so the Signal Handler knows what to clean up
 active_virtual_ports = []
@@ -233,3 +233,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
